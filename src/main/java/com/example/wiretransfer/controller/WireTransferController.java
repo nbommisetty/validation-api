@@ -33,7 +33,7 @@ public class WireTransferController {
     public ResponseEntity<?> createWireTransfer(@RequestBody WireTransferRequest request) {
         try {
             // Perform validation using the JSON configuration
-            jsonValidationService.validate(request, "wireTransferRequest");
+            jsonValidationService.validate(request);
 
             // If validation passes, proceed with business logic (mocked here)
             logger.info("Wire transfer request validated successfully: {}", request.getBeneficiaryName());

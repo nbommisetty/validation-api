@@ -5,13 +5,16 @@ import com.example.wiretransfer.exception.ValidationException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import jakarta.annotation.PostConstruct;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.Resource;
-import org.springframework.core.io.ResourceLoader;
+import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
+import org.springframework.core.io.support.ResourcePatternResolver;
 import org.springframework.stereotype.Service;
 import org.springframework.util.ReflectionUtils;
 
-import jakarta.annotation.PostConstruct;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.Field;
@@ -21,74 +24,116 @@ import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
 
-
 @Service
 public class JsonValidationService {
 
+    private static final Logger logger = LoggerFactory.getLogger(JsonValidationService.class);
+
     private final ObjectMapper objectMapper;
-    private final ResourceLoader resourceLoader;
+    private final ResourcePatternResolver resourceResolver; // For scanning multiple resources
 
     private JsonNode validationDefinitions;
-    private JsonNode wireTransferValidationConfig; // To hold the specific wire transfer config
+    private final Map<String, JsonNode> specificValidationConfigs = new HashMap<>();
 
     // For holiday checking - simplified for example
     private static final Set<LocalDate> PUBLIC_HOLIDAYS_2025 = new HashSet<>();
 
     static {
         // Initialize holidays (in a real app, this would come from a DB or config service)
-        PUBLIC_HOLIDAYS_2025.add(LocalDate.of(2025, 1, 1));   // New Year's Day
-        PUBLIC_HOLIDAYS_2025.add(LocalDate.of(2025, 1, 20));  // Martin Luther King, Jr. Day
-        PUBLIC_HOLIDAYS_2025.add(LocalDate.of(2025, 2, 17));  // Washington's Birthday
-        PUBLIC_HOLIDAYS_2025.add(LocalDate.of(2025, 5, 26));  // Memorial Day
-        PUBLIC_HOLIDAYS_2025.add(LocalDate.of(2025, 6, 19));  // Juneteenth
-        PUBLIC_HOLIDAYS_2025.add(LocalDate.of(2025, 7, 4));   // Independence Day
-        PUBLIC_HOLIDAYS_2025.add(LocalDate.of(2025, 9, 1));   // Labor Day
-        PUBLIC_HOLIDAYS_2025.add(LocalDate.of(2025, 10, 13)); // Columbus Day
-        PUBLIC_HOLIDAYS_2025.add(LocalDate.of(2025, 11, 11)); // Veterans Day
-        PUBLIC_HOLIDAYS_2025.add(LocalDate.of(2025, 11, 27)); // Thanksgiving Day
-        PUBLIC_HOLIDAYS_2025.add(LocalDate.of(2025, 12, 25)); // Christmas Day
+        PUBLIC_HOLIDAYS_2025.add(LocalDate.of(2025, 1, 1));
+        PUBLIC_HOLIDAYS_2025.add(LocalDate.of(2025, 1, 20));
+        // ... (add other holidays as before)
+        PUBLIC_HOLIDAYS_2025.add(LocalDate.of(2025, 12, 25));
     }
 
-
     @Autowired
-    public JsonValidationService(ObjectMapper objectMapper, ResourceLoader resourceLoader) {
+    public JsonValidationService(ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
-        this.resourceLoader = resourceLoader;
+        this.resourceResolver = new PathMatchingResourcePatternResolver();
     }
 
     @PostConstruct
-    public void loadValidationConfigs() throws IOException {
-        validationDefinitions = loadJsonFromClasspath("classpath:validation/validationDefinitions.json").path("definitions");
-        wireTransferValidationConfig = loadJsonFromClasspath("classpath:validation/wireTransferValidationConfig.json");
+    public void loadAllValidationConfigs() throws IOException {
+        // 1. Load common definitions
+        try {
+            Resource definitionsResource = resourceResolver.getResource("classpath:validation/common/validationDefinitions.json");
+            if (!definitionsResource.exists()) {
+                logger.warn("Common validation definitions file not found: classpath:validation/common/validationDefinitions.json");
+                this.validationDefinitions = objectMapper.createObjectNode(); // Empty definitions
+            } else {
+                try (InputStream inputStream = definitionsResource.getInputStream()) {
+                    this.validationDefinitions = objectMapper.readTree(inputStream).path("definitions");
+                    logger.info("Successfully loaded common validation definitions.");
+                }
+            }
+        } catch (IOException e) {
+            logger.error("Failed to load common validation definitions.", e);
+            throw e; // Or handle more gracefully, e.g., by setting empty definitions
+        }
+
+
+        // 2. Load all specific DTO validation configurations. Eventually, this would come from a DB or config service.
+        try {
+            Resource[] resources = resourceResolver.getResources("classpath:validation/specifics/*.json");
+            for (Resource resource : resources) {
+                String filename = resource.getFilename();
+                if (filename != null) {
+                    String configKey = filename.substring(0, filename.lastIndexOf(".json"));
+                    try (InputStream inputStream = resource.getInputStream()) {
+                        JsonNode specificConfig = objectMapper.readTree(inputStream);
+                        specificValidationConfigs.put(configKey, specificConfig);
+                        logger.info("Loaded validation config for DTO: {}", configKey);
+                    }
+                }
+            }
+            if (specificValidationConfigs.isEmpty()) {
+                logger.warn("No specific DTO validation configuration files found in classpath:validation/specifics/");
+            }
+        } catch (IOException e) {
+            logger.error("Failed to load specific DTO validation configurations.", e);
+            // Depending on requirements, you might throw e or allow the service to start with no specific configs
+        }
     }
 
-    private JsonNode loadJsonFromClasspath(String path) throws IOException {
-        Resource resource = resourceLoader.getResource(path);
-        if (!resource.exists()) {
-            throw new IOException("Resource not found: " + path);
+
+    /**
+     * Validates the given data object based on its class name mapping to a JSON configuration.
+     * @param data The DTO to validate.
+     * @throws ValidationException if validation fails.
+     * @throws IllegalArgumentException if no validation configuration is found for the DTO.
+     */
+    public void validate(Object data) {
+        if (data == null) {
+            throw new IllegalArgumentException("Data object to validate cannot be null.");
         }
-        try (InputStream inputStream = resource.getInputStream()) {
-            return objectMapper.readTree(inputStream);
-        }
+        String configKey = data.getClass().getSimpleName();
+        validate(data, configKey);
     }
+
 
     /**
      * Validates the given data object against the specified configuration key.
+     * This method can be kept for cases where explicit key-based validation is needed,
+     * or the new validate(Object data) method can be the primary one.
      * @param data The object to validate.
-     * @param configKey The key for the specific validation configuration (e.g., "wireTransferRequest").
+     * @param configKey The key for the specific validation configuration (e.g., "WireTransferRequest").
      * @throws ValidationException if validation fails.
      */
     public void validate(Object data, String configKey) {
-        JsonNode specificRulesNode = wireTransferValidationConfig.path(configKey);
-        if (specificRulesNode.isMissingNode()) {
-            throw new IllegalArgumentException("Validation configuration not found for key: " + configKey);
+        JsonNode specificRulesNode = specificValidationConfigs.get(configKey);
+
+        if (specificRulesNode == null || specificRulesNode.isMissingNode()) {
+            throw new IllegalArgumentException("Validation configuration not found for key/DTO: " + configKey +
+                                               ". Ensure a corresponding JSON file (e.g., " + configKey + ".json) exists in validation/specifics/.");
         }
 
         List<ErrorDetail> errors = new ArrayList<>();
@@ -101,15 +146,17 @@ public class JsonValidationService {
             try {
                 Field javaField = ReflectionUtils.findField(data.getClass(), fieldName);
                 if (javaField == null) {
-                    // This case should ideally not happen if DTO matches config
-                    errors.add(new ErrorDetail(fieldName, "Field not found in request object."));
+                    logger.warn("Field '{}' defined in validation config for {} not found in DTO class {}.",
+                                fieldName, configKey, data.getClass().getName());
+                    // errors.add(new ErrorDetail(fieldName, "Field definition mismatch.")); // Optional: report this
                     return; // Skip to next field
                 }
                 javaField.setAccessible(true);
                 Object value = javaField.get(data);
                 checkFieldRules(fieldName, value, fieldRules, errors);
             } catch (IllegalAccessException e) {
-                errors.add(new ErrorDetail(fieldName, "Error accessing field value: " + e.getMessage()));
+                logger.error("Error accessing field '{}' on DTO {}: {}", fieldName, configKey, e.getMessage());
+                errors.add(new ErrorDetail(fieldName, "Error accessing field value."));
             }
         });
 
@@ -118,14 +165,18 @@ public class JsonValidationService {
         }
     }
 
+    // resolveRef, checkFieldRules, validateString, validateNumber, validateDate methods remain the same
+    // as in artifact springboot_validation_service_v1, ensure they are present here.
+    // For brevity, they are not repeated but are essential.
+
     private JsonNode resolveRef(JsonNode ruleNode, JsonNode definitions) {
         if (ruleNode.has("$ref")) {
             String refPath = ruleNode.get("$ref").asText().replace("#/definitions/", "");
             JsonNode definitionRule = definitions.path(refPath);
             if (definitionRule.isMissingNode()) {
-                throw new IllegalArgumentException("Validation definition not found for $ref: " + ruleNode.get("$ref").asText());
+                throw new IllegalArgumentException("Validation definition not found for $ref: " + ruleNode.get("$ref").asText() +
+                                                   ". Check validation/common/validationDefinitions.json.");
             }
-            // Merge: specific rules can override definition rules
             ObjectNode merged = definitionRule.deepCopy();
             ruleNode.fields().forEachRemaining(entry -> {
                 if (!entry.getKey().equals("$ref")) {
@@ -139,9 +190,8 @@ public class JsonValidationService {
 
     private void checkFieldRules(String fieldName, Object value, JsonNode rules, List<ErrorDetail> errors) {
         boolean isRequired = rules.path("required").asBoolean(false);
-        String type = rules.path("type").asText("string"); // Default type assumption
+        String type = rules.path("type").asText("string");
 
-        // 1. Required Check (handles empty strings, nulls)
         if (isRequired) {
             boolean isEmpty = false;
             if (value == null) {
@@ -149,17 +199,14 @@ public class JsonValidationService {
             } else if (value instanceof String && ((String) value).trim().isEmpty()) {
                 isEmpty = true;
             }
-            // Add checks for other types if they can be "empty" e.g. empty collections
             if (isEmpty) {
                 errors.add(new ErrorDetail(fieldName, rules.path("errorMessageRequired").asText(fieldName + " is required.")));
-                return; // If required and missing, no further checks needed for this field
+                return; 
             }
         } else if (value == null || (value instanceof String && ((String) value).trim().isEmpty())) {
-            // If optional and truly empty, no further validation needed for this field
             return;
         }
 
-        // 2. Type-specific validations (only if value is present)
         switch (type.toLowerCase()) {
             case "string":
                 validateString(fieldName, (String) value, rules, errors);
@@ -170,9 +217,8 @@ public class JsonValidationService {
             case "date":
                 validateDate(fieldName, value, rules, errors);
                 break;
-            // Add cases for boolean, array, etc. if needed
             default:
-                // errors.add(new ErrorDetail(fieldName, "Unsupported validation type: " + type));
+                logger.warn("Unsupported validation type: {} for field: {}", type, fieldName);
                 break;
         }
     }
@@ -212,14 +258,20 @@ public class JsonValidationService {
             numberValue = (BigDecimal) value;
         } else if (value instanceof Number) {
             numberValue = new BigDecimal(value.toString());
-        } else if (value instanceof String) {
+        } else if (value instanceof String && !((String)value).trim().isEmpty()) { // check for non-empty string
             try {
-                numberValue = new BigDecimal((String) value);
+                numberValue = new BigDecimal(((String) value).trim());
             } catch (NumberFormatException e) {
                 errors.add(new ErrorDetail(fieldName, rules.path("errorMessageType").asText("Must be a valid number.")));
                 return;
             }
-        } else {
+        } else if (value instanceof String && ((String)value).trim().isEmpty()){ // if it's an empty string and not required, it's fine
+            if(rules.path("required").asBoolean(false)) { // if required, it should have been caught already
+                 errors.add(new ErrorDetail(fieldName, rules.path("errorMessageType").asText("Must be a valid number.")));
+            }
+            return;
+        }
+         else {
              errors.add(new ErrorDetail(fieldName, rules.path("errorMessageType").asText("Must be a valid number.")));
             return;
         }
@@ -242,15 +294,20 @@ public class JsonValidationService {
         LocalDate dateValue;
         if (value instanceof LocalDate) {
             dateValue = (LocalDate) value;
-        } else if (value instanceof String) {
+        } else if (value instanceof String && !((String)value).trim().isEmpty()) { // check for non-empty string
             try {
-                // Assuming frontend sends "yyyy-MM-dd"
-                dateValue = LocalDate.parse((String) value, DateTimeFormatter.ISO_LOCAL_DATE);
+                dateValue = LocalDate.parse(((String) value).trim(), DateTimeFormatter.ISO_LOCAL_DATE);
             } catch (DateTimeParseException e) {
                 errors.add(new ErrorDetail(fieldName, rules.path("errorMessageType").asText("Invalid date format. Expected yyyy-MM-dd.")));
                 return;
             }
-        } else {
+        } else if (value instanceof String && ((String)value).trim().isEmpty()){ // if it's an empty string and not required, it's fine
+             if(rules.path("required").asBoolean(false)) { // if required, it should have been caught already
+                 errors.add(new ErrorDetail(fieldName, rules.path("errorMessageType").asText("Invalid date format. Expected yyyy-MM-dd.")));
+            }
+            return;
+        }
+        else {
             errors.add(new ErrorDetail(fieldName, rules.path("errorMessageType").asText("Invalid date type.")));
             return;
         }

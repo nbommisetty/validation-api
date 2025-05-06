@@ -1,5 +1,4 @@
 {
-  "wireTransferRequest": {
     "beneficiaryName": {
       "$ref": "#/definitions/nonEmptyString",
       "maxLength": 100,
@@ -34,5 +33,4 @@
       "maxLength": 140,
       "errorMessageMaxLength": "Memo cannot exceed {maxLength} characters."
     }
-  }
 }
