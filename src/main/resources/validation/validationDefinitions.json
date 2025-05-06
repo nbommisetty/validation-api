@@ -1,0 +1,39 @@
+{
+    "definitions": {
+      "nonEmptyString": {
+        "type": "string",
+        "required": true,
+        "minLength": 1,
+        "errorMessageRequired": "This field cannot be empty.",
+        "errorMessageMinLength": "This field requires at least {minLength} character(s)."
+      },
+      "accountNumber": {
+        "type": "string",
+        "required": true,
+        "pattern": "^[0-9]{8,17}$",
+        "errorMessageRequired": "Account number is required.",
+        "errorMessagePattern": "Account number must be between 8 and 17 digits."
+      },
+      "positiveAmount": {
+        "type": "number",
+        "required": true,
+        "minValue": 0.01,
+        "maxValue": 1000000,
+        "errorMessageRequired": "Amount is required.",
+        "errorMessageType": "Amount must be a valid number.",
+        "errorMessageMinValue": "Amount must be greater than $0.00.",
+        "errorMessageMaxValue": "Amount cannot exceed ${maxValue}."
+      },
+      "validDate": {
+        "type": "date",
+        "required": true,
+        "customRule": "noWeekendOrHoliday",
+        "minDate": "today",
+        "errorMessageRequired": "Transfer date is required.",
+        "errorMessageType": "Please enter a valid date.",
+        "errorMessageMinDate": "Transfer date cannot be in the past.",
+        "errorMessageCustomRule": "Transfer date cannot be a weekend or public holiday."
+      }
+    }
+  }
+  

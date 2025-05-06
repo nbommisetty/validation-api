@@ -1,0 +1,38 @@
+{
+  "wireTransferRequest": {
+    "beneficiaryName": {
+      "$ref": "#/definitions/nonEmptyString",
+      "maxLength": 100,
+      "errorMessageMaxLength": "Beneficiary name cannot exceed {maxLength} characters."
+    },
+    "beneficiaryAccountNumber": {
+       "$ref": "#/definitions/accountNumber"
+    },
+    "routingNumber": {
+      "type": "string",
+      "required": true,
+      "pattern": "^[0-9]{9}$",
+      "errorMessageRequired": "Routing number is required.",
+      "errorMessagePattern": "Routing number must be exactly 9 digits."
+    },
+    "amount": {
+       "$ref": "#/definitions/positiveAmount"
+    },
+    "currency": {
+      "type": "string",
+      "required": true,
+      "allowedValues": ["USD", "CAD", "EUR"],
+      "errorMessageRequired": "Currency is required.",
+      "errorMessageAllowedValues": "Invalid currency. Allowed: {allowedValues}."
+    },
+    "transferDate": {
+      "$ref": "#/definitions/validDate"
+    },
+    "memo": {
+      "type": "string",
+      "required": false,
+      "maxLength": 140,
+      "errorMessageMaxLength": "Memo cannot exceed {maxLength} characters."
+    }
+  }
+}
